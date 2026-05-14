@@ -11,7 +11,7 @@ from PIL import Image
 
 app = FastAPI(title="Satellite Asset Detection API")
 
-model = YOLO("best.pt")
+model = YOLO("yolov8n.pt")
 
 detection_history = []
 
@@ -50,7 +50,7 @@ async def detect_assets(file: UploadFile = File(...)):
     for r in results:
         boxes = r.boxes
         for box in boxes:
-            b = box.xyxy[0].tolist() # [x1, y1, x2, y2]
+            b = box.xyxy[0].tolist()
             conf = float(box.conf)
             cls = int(box.cls)
             label = model.names[cls]
