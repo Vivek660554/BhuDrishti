@@ -2,7 +2,7 @@ import io
 import json
 import numpy as np
 import rasterio
-from rasterio.io import MemoryFile  # <-- Added for in-memory file handling
+from rasterio.control import GroundControlPoint
 from pyproj import Transformer
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
@@ -16,18 +16,8 @@ model = YOLO("yolov8n.pt")
 detection_history = []
 
 def get_geo_coords(x, y, dataset):
-    """Returns (lat, lon) in WGS84 coordinates."""
     if dataset.transform:
-        # 1. Get coordinates in the dataset's native CRS
-        native_x, native_y = dataset.xy(int(y), int(x))
-        
-        # 2. Convert native CRS to EPSG:4326 (Lat/Lon) if necessary
-        if dataset.crs and dataset.crs.to_epsg() != 4326:
-            transformer = Transformer.from_crs(dataset.crs, "EPSG:4326", always_xy=True)
-            lon, lat = transformer.transform(native_x, native_y)
-        else:
-            lon, lat = native_x, native_y
-            
+        lon, lat = dataset.xy(y, x)
         return lat, lon
     return None, None
 
@@ -45,48 +35,43 @@ async def detect_assets(file: UploadFile = File(...)):
     global detection_history
     contents = await file.read()
     
-    # Standard image parsing for YOLO
     img = Image.open(io.BytesIO(contents))
     results = model.predict(img)
     
+    try:
+        with rasterio.open(io.BytesIO(contents)) as ds:
+            crs = ds.crs
+            transform = ds.transform
+    except Exception:
+        ds = None
+
     detections = []
     
-    # Correctly open rasterio using MemoryFile and keep it open during processing
-    with MemoryFile(contents) as memfile:
-        try:
-            ds = memfile.open()
-        except Exception:
-            ds = None
-
-        try:
-            for r in results:
-                boxes = r.boxes
-                for box in boxes:
-                    b = box.xyxy[0].tolist()
-                    conf = float(box.conf)
-                    cls = int(box.cls)
-                    label = model.names[cls]
-                    
-                    cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
-                    lat, lon = (None, None)
-                    area = 0
-                    
-                    if ds:
-                        lat, lon = get_geo_coords(cx, cy, ds)
-                        area = calculate_area(b, ds)
-
-                    det_data = {
-                        "asset_type": label,
-                        "confidence": conf,
-                        "bbox": b,
-                        "area_sqm": area,
-                        "geo_coords": {"lat": lat, "lon": lon} if lat is not None else "No GeoData"
-                    }
-                    detections.append(det_data)
-                    detection_history.append(det_data)
-        finally:
+    for r in results:
+        boxes = r.boxes
+        for box in boxes:
+            b = box.xyxy[0].tolist()
+            conf = float(box.conf)
+            cls = int(box.cls)
+            label = model.names[cls]
+            
+            cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+            lat, lon = (None, None)
+            area = 0
+            
             if ds:
-                ds.close()
+                lat, lon = get_geo_coords(cx, cy, ds)
+                area = calculate_area(b, ds)
+
+            det_data = {
+                "asset_type": label,
+                "confidence": conf,
+                "bbox": b,
+                "area_sqm": area,
+                "geo_coords": {"lat": lat, "lon": lon} if lat else "No GeoData"
+            }
+            detections.append(det_data)
+            detection_history.append(det_data)
 
     return {"filename": file.filename, "detections": detections}
 
